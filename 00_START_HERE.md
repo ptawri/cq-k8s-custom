@@ -39,7 +39,7 @@ cd /Users/prajjwaltawri/Desktop/k8cloudquery/cq-k8s-custom
 go build -o ./bin/plugin ./cmd/plugin
 
 # Run sync
-cloudquery sync cloudquery_test.yml
+cloudquery sync cloudquery_sync.yml cloudquery_destination.yml
 
 # Verify data in Postgres
 psql -U postgres k8s -c "SELECT COUNT(*), context_name FROM k8s_pods GROUP BY context_name;"
@@ -73,7 +73,7 @@ Start with these based on what you need:
   - CloudQuery plugin framework integration
   - PostgreSQL persistence layer
   - Configuration management
-- **CloudQuery Config** — Example `cloudquery_test.yml`
+- **CloudQuery Config** — Example `cloudquery_sync.yml` + `cloudquery_destination.yml`
 - **Complete Documentation** — 6 guides covering everything
 
 ### Supported Resources
@@ -94,14 +94,27 @@ Start with these based on what you need:
 
 ### Default Config (both clusters, all resources)
 ```yaml
-# cloudquery_test.yml
-sources:
-  - name: k8s-custom
-    path: ./bin/plugin
-    spec:
-      database_url: postgres://postgres:postgres@localhost:5432/k8s
-      contexts: [dev, prod]
-      resources: [namespaces, pods, deployments, services, crds]
+# cloudquery_sync.yml
+kind: source
+spec:
+  name: k8s-custom
+  registry: local
+  path: ./bin/plugin
+  spec:
+    database_url: postgres://postgres:postgres@localhost:5432/k8s
+    contexts: [dev, prod]
+    resources: [namespaces, pods, deployments, services, crds]
+```
+
+```yaml
+# cloudquery_destination.yml
+kind: destination
+spec:
+  name: postgres
+  registry: cloudquery
+  path: postgresql
+  spec:
+    connection_string: postgres://postgres:postgres@localhost:5432/k8s
 ```
 
 ### Customize for Your Needs
@@ -115,7 +128,7 @@ Edit the config to filter:
 ## 📊 How It Works
 
 ```
-User runs: cloudquery sync cloudquery_test.yml
+User runs: cloudquery sync cloudquery_sync.yml cloudquery_destination.yml
                     ↓
     Plugin loads config & connects to PostgreSQL
                     ↓
@@ -132,7 +145,7 @@ User runs: cloudquery sync cloudquery_test.yml
 ## 🧪 Testing
 
 ### Verify Everything Works
-1. Run the sync: `cloudquery sync cloudquery_test.yml`
+1. Run the sync: `cloudquery sync cloudquery_sync.yml cloudquery_destination.yml`
 2. Check for errors in output
 3. Query the data:
    ```sql
@@ -168,7 +181,8 @@ cq-k8s-custom/
 ├── TESTING.md                 # Test procedures
 ├── README.md                  # Build instructions
 ├── PLUGIN_SUMMARY.md          # Feature summary
-└── cloudquery_test.yml        # Example config
+├── cloudquery_sync.yml        # Source config
+└── cloudquery_destination.yml # Destination config
 ```
 
 ---
@@ -177,7 +191,7 @@ cq-k8s-custom/
 
 ### For Quick Testing
 1. Follow **QUICKSTART.md** (3 pages)
-2. Run `cloudquery sync cloudquery_test.yml`
+2. Run `cloudquery sync cloudquery_sync.yml cloudquery_destination.yml`
 3. Query Postgres to verify data
 
 ### For Understanding the Design
@@ -187,7 +201,7 @@ cq-k8s-custom/
 
 ### For Production Deployment
 1. Review **TESTING.md** for comprehensive validation
-2. Customize `cloudquery_test.yml` for your clusters
+2. Customize `cloudquery_sync.yml` for your clusters
 3. Set up credentials/secrets management for database URL
 4. Integrate with your CloudQuery Hub account
 
@@ -199,7 +213,7 @@ cq-k8s-custom/
 # One command to get started:
 cd /Users/prajjwaltawri/Desktop/k8cloudquery/cq-k8s-custom && \
 go build -o ./bin/plugin ./cmd/plugin && \
-cloudquery sync cloudquery_test.yml
+cloudquery sync cloudquery_sync.yml cloudquery_destination.yml
 ```
 
 Then query your Kubernetes data:
@@ -217,11 +231,11 @@ SELECT context_name, COUNT(*) FROM k8s_namespaces GROUP BY context_name;
 | Task | Command |
 |------|---------|
 | Build plugin | `go build -o ./bin/plugin ./cmd/plugin` |
-| Run sync | `cloudquery sync cloudquery_test.yml` |
+| Run sync | `cloudquery sync cloudquery_sync.yml cloudquery_destination.yml` |
 | Check Postgres | `psql -U postgres k8s` |
 | View K8s contexts | `kubectl config get-contexts` |
 | Check minikube clusters | `minikube profile list` |
-| Debug sync | `cloudquery sync cloudquery_test.yml --log-level debug` |
+| Debug sync | `cloudquery sync cloudquery_sync.yml cloudquery_destination.yml --log-level debug` |
 
 ---
 
@@ -230,7 +244,7 @@ SELECT context_name, COUNT(*) FROM k8s_namespaces GROUP BY context_name;
 - **Build issues?** → Run `go mod tidy` then rebuild
 - **PostgreSQL issues?** → Check `TESTING.md` prerequisites section
 - **Kubernetes issues?** → Verify contexts and permissions
-- **Config issues?** → Review `cloudquery_test.yml` example
+- **Config issues?** → Review `cloudquery_sync.yml` example
 - **Deep dive?** → Read `ARCHITECTURE.md`
 
 ---

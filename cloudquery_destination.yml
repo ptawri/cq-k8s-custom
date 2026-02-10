@@ -1,0 +1,9 @@
+kind: destination
+spec:
+  name: postgres
+  registry: cloudquery
+  path: cloudquery/postgresql
+  version: "v8.14.0"
+  migrate_mode: forced
+  spec:
+    connection_string: postgres://postgres:postgres@localhost:5434/k8s?sslmode=disable

@@ -78,16 +78,17 @@ kubectl --context=prod get services -A
 
 ### 4. Test Plugin via CloudQuery Sync
 
-The plugin is configured in `cloudquery_test.yml`. Review it:
+The plugin is configured in `cloudquery_sync.yml` and `cloudquery_destination.yml`. Review them:
 
 ```zsh
-cat cloudquery_test.yml
+cat cloudquery_sync.yml
+cat cloudquery_destination.yml
 ```
 
 Run the sync:
 ```zsh
 cd /Users/prajjwaltawri/Desktop/k8cloudquery/cq-k8s-custom
-cloudquery sync cloudquery_test.yml --log-level debug
+cloudquery sync cloudquery_sync.yml cloudquery_destination.yml --log-level debug
 ```
 
 Monitor for:
@@ -128,21 +129,25 @@ k8s_namespaces data:
 
 ### 6. Test Filtering (Optional)
 
-Edit `cloudquery_test.yml` to test context/resource filtering:
+Edit `cloudquery_sync.yml` to test context/resource filtering:
 
 ```yaml
 spec:
-  database_url: postgres://postgres:postgres@localhost:5432/k8s?sslmode=disable
-  contexts:
-    - dev    # Only sync dev cluster
-  resources:
-    - namespaces  # Only sync namespaces
-    - pods
+   name: k8s-custom
+   registry: local
+   path: ./bin/plugin
+   spec:
+      database_url: postgres://postgres:postgres@localhost:5432/k8s?sslmode=disable
+      contexts:
+         - dev    # Only sync dev cluster
+      resources:
+         - namespaces  # Only sync namespaces
+         - pods
 ```
 
 Re-run the sync:
 ```zsh
-cloudquery sync cloudquery_test.yml
+cloudquery sync cloudquery_sync.yml cloudquery_destination.yml
 ```
 
 Verify only filtered resources are synced.

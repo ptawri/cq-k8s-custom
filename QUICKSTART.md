@@ -37,49 +37,48 @@ ls -lh bin/plugin
 ## 3. Run Your First Sync
 
 ```zsh
-# Option A: Using the test config (includes both dev and prod)
-cloudquery sync cloudquery_test.yml
+# Option A: Using the repo configs (includes both dev and prod)
+cloudquery sync cloudquery_sync.yml cloudquery_destination.yml
 
-# Option B: Create your own config
-cat > my_config.yml << 'EOF'
-sources:
-  - name: k8s-custom
-    path: ./bin/plugin
-    registry: local
-    spec:
-      database_url: postgres://postgres:postgres@localhost:5432/k8s?sslmode=disable
-      contexts:
-        - dev
-        - prod
-      resources:
-        - namespaces
-        - pods
-
-destinations:
-  - name: postgres
-    path: cloudquery/postgresql
-    spec:
-      connection_string: postgres://postgres:postgres@localhost:5432/k8s?sslmode=disable
+# Option B: Create your own configs
+cat > my_source.yml << 'EOF'
+kind: source
+spec:
+  name: k8s-custom
+  registry: local
+  path: ./bin/plugin
+  spec:
+    database_url: postgres://postgres:postgres@localhost:5432/k8s?sslmode=disable
+    contexts:
+      - dev
+      - prod
+    resources:
+      - namespaces
+      - pods
 EOF
 
-cloudquery sync my_config.yml
+cat > my_destination.yml << 'EOF'
+kind: destination
+spec:
+  name: postgres
+  registry: cloudquery
+  path: postgresql
+  spec:
+    connection_string: postgres://postgres:postgres@localhost:5432/k8s?sslmode=disable
+EOF
+
+cloudquery sync my_source.yml my_destination.yml
 ```
 
 ## 4. Verify Data
 
-```zsh
-# Connect to Postgres
-psql -U postgres k8s
-
-# Check what was synced
+```sql
+-- Check what was synced
 SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_name LIKE 'k8s_%';
 
-# Count resources by cluster
+-- Count resources by cluster
 SELECT COUNT(*), context_name FROM k8s_namespaces GROUP BY context_name;
 SELECT COUNT(*), context_name FROM k8s_pods GROUP BY context_name;
-
-# Exit
-\q
 ```
 
 ## 5. Next Steps
@@ -94,7 +93,6 @@ SELECT COUNT(*), context_name FROM k8s_pods GROUP BY context_name;
 ### Plugin won't build
 ```zsh
 go mod tidy  # Update dependencies
-go build -o ./bin/plugin ./cmd/plugin
 ```
 
 ### PostgreSQL connection error
@@ -152,7 +150,8 @@ cq-k8s-custom/
 ├── TESTING.md              # Test procedures
 ├── README.md               # Build/run guide
 ├── PLUGIN_SUMMARY.md       # Feature summary
-└── cloudquery_test.yml     # Example CloudQuery config
+├── cloudquery_sync.yml     # Source config
+└── cloudquery_destination.yml # Destination config
 ```
 
 ## Common Commands
@@ -162,10 +161,10 @@ cq-k8s-custom/
 cd /Users/prajjwaltawri/Desktop/k8cloudquery/cq-k8s-custom && go build -o ./bin/plugin ./cmd/plugin
 
 # Sync (default: dev + prod contexts, all resources)
-cloudquery sync cloudquery_test.yml
+cloudquery sync cloudquery_sync.yml cloudquery_destination.yml
 
 # Sync with debug output
-cloudquery sync cloudquery_test.yml --log-level debug
+cloudquery sync cloudquery_sync.yml cloudquery_destination.yml --log-level debug
 
 # Check synced data
 psql -U postgres k8s -c "SELECT * FROM k8s_pods LIMIT 5;"
@@ -186,6 +185,7 @@ By default, the plugin syncs:
   - Custom Resource Definitions (CRDs)
 
 Tables created in PostgreSQL:
+- `k8s_clusters`
 - `k8s_namespaces`
 - `k8s_pods`
 - `k8s_deployments`
@@ -197,8 +197,8 @@ Each row includes:
 - `uid` — Unique Kubernetes object ID
 - `name`, `namespace` — Resource identifiers
 - `created_at` — Creation timestamp
-- Resource-specific fields (cpu/memory limits, replicas, ports, etc.)
+- Resource-specific fields (replicas, ports, etc.)
 
 ---
 
-**Ready to sync?** Run `cloudquery sync cloudquery_test.yml` and watch your Kubernetes data flow into Postgres! 🚀
+**Ready to sync?** Run `cloudquery sync cloudquery_sync.yml cloudquery_destination.yml` and watch your Kubernetes data flow into Postgres! 🚀

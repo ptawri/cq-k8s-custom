@@ -18,9 +18,9 @@ func ClustersTable() *schema.Table {
 			{Name: "namespace", Type: arrow.BinaryTypes.String},
 			{Name: "kubernetes_version", Type: arrow.BinaryTypes.String},
 			{Name: "node_count", Type: arrow.PrimitiveTypes.Int64},
-			{Name: "synced_at", Type: arrow.StructOf()},
-			{Name: "created_at", Type: arrow.StructOf()},
-			{Name: "updated_at", Type: arrow.StructOf()},
+			{Name: "synced_at", Type: arrow.FixedWidthTypes.Timestamp_ns},
+			{Name: "created_at", Type: arrow.FixedWidthTypes.Timestamp_ns},
+			{Name: "updated_at", Type: arrow.FixedWidthTypes.Timestamp_ns},
 		},
 	}
 }
@@ -34,7 +34,7 @@ func PodsTable() *schema.Table {
 			{Name: "name", Type: arrow.BinaryTypes.String},
 			{Name: "namespace", Type: arrow.BinaryTypes.String},
 			{Name: "status", Type: arrow.BinaryTypes.String},
-			{Name: "created_at", Type: arrow.StructOf()},
+			{Name: "created_at", Type: arrow.FixedWidthTypes.Timestamp_ns},
 		},
 	}
 }
@@ -47,9 +47,9 @@ func DeploymentsTable() *schema.Table {
 			{Name: "id", Type: types.ExtensionTypes.UUID, PrimaryKey: true},
 			{Name: "name", Type: arrow.BinaryTypes.String},
 			{Name: "namespace", Type: arrow.BinaryTypes.String},
-			{Name: "replicas", Type: arrow.BinaryTypes.String},
-			{Name: "ready", Type: arrow.BinaryTypes.String},
-			{Name: "created_at", Type: arrow.StructOf()},
+			{Name: "replicas", Type: arrow.PrimitiveTypes.Int64},
+			{Name: "ready", Type: arrow.PrimitiveTypes.Int64},
+			{Name: "created_at", Type: arrow.FixedWidthTypes.Timestamp_ns},
 		},
 	}
 }
@@ -64,7 +64,7 @@ func ServicesTable() *schema.Table {
 			{Name: "namespace", Type: arrow.BinaryTypes.String},
 			{Name: "type", Type: arrow.BinaryTypes.String},
 			{Name: "cluster_ip", Type: arrow.BinaryTypes.String},
-			{Name: "created_at", Type: arrow.StructOf()},
+			{Name: "created_at", Type: arrow.FixedWidthTypes.Timestamp_ns},
 		},
 	}
 }
@@ -80,7 +80,7 @@ func CustomResourcesTable() *schema.Table {
 			{Name: "kind", Type: arrow.BinaryTypes.String},
 			{Name: "plural", Type: arrow.BinaryTypes.String},
 			{Name: "scope", Type: arrow.BinaryTypes.String},
-			{Name: "created_at", Type: arrow.StructOf()},
+			{Name: "created_at", Type: arrow.FixedWidthTypes.Timestamp_ns},
 		},
 	}
 }

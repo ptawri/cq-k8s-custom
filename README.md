@@ -44,39 +44,64 @@ export DATABASE_URL="postgres://user:password@localhost:5432/k8s?sslmode=disable
 
 ## Run with CloudQuery
 
-This plugin now integrates with CloudQuery and can be used via the `cloudquery` CLI. Create a `config.yml`:
+This plugin integrates with CloudQuery v6 via the `cloudquery` CLI. It emits Apache Arrow records as `SyncInsert` messages, allowing CloudQuery destination plugins to handle data persistence.
+
+### Source Configuration
+
+Create `cloudquery_sync.yml`:
 
 ```yaml
-sources:
-  - name: k8s-custom
-    path: local
-    registry: local
-    spec:
-      database_url: postgres://user:password@localhost:5432/k8s?sslmode=disable
-      contexts:
-        - dev
-        - prod
-      resources:
-        - namespaces
-        - pods
-        - deployments
-        - services
-        - crds
-
-destinations:
-  - name: postgres
-    path: cloudquery/postgresql
-    spec:
-      connection_string: postgres://user:password@localhost:5432/k8s?sslmode=disable
+kind: source
+spec:
+  name: k8s-custom
+  registry: local
+  path: ./bin/plugin
+  destinations:
+    - postgres
+  spec:
+    database_url: postgres://user:password@localhost:5432/k8s?sslmode=disable
+    contexts:
+      - dev
+      - prod
+    resources:
+      - clusters
+      - namespaces
+      - pods
+      - deployments
+      - services
+      - crds
+  tables:
+    - k8s_clusters
+    - k8s_namespaces
+    - k8s_pods
+    - k8s_deployments
+    - k8s_services
+    - k8s_custom_resources
 ```
 
-Then sync:
+### Destination Configuration
+
+Create `cloudquery_destination.yml`:
+
+```yaml
+kind: destination
+spec:
+  name: postgres
+  registry: cloudquery
+  path: cloudquery/postgresql
+  version: "v8.14.0"
+  migrate_mode: forced
+  spec:
+    connection_string: postgres://user:password@localhost:5432/k8s?sslmode=disable
+```
+
+### Run Sync
 
 ```zsh
-cloudquery sync config.yml
+cloudquery sync cloudquery_sync.yml cloudquery_destination.yml
 ```
 
-This will run the plugin and automatically persist Kubernetes data to Postgres.
+The plugin emits Kubernetes resources as Arrow records through CloudQuery's message pipeline. The PostgreSQL destination plugin receives these messages and persists data to the database.
 
 ## Notes
 - The plugin discovers all Kubernetes contexts from `~/.kube/config` and iterates through them.

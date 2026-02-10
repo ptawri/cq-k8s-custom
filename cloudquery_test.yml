@@ -1,21 +1,16 @@
-sources:
-  - name: k8s-custom
-    path: ./bin/plugin
-    registry: local
-    spec:
-      database_url: postgres://postgres:postgres@localhost:5434/k8s?sslmode=disable
-      contexts:
-        - dev
-        - prod
-      resources:
-        - namespaces
-        - pods
-        - deployments
-        - services
-        - crds
-
-destinations:
-  - name: postgres
-    path: cloudquery/postgresql
-    spec:
-      connection_string: postgres://postgres:postgres@localhost:5434/k8s?sslmode=disable
+kind: source
+spec:
+  name: k8s-custom
+  registry: local
+  path: ./bin/plugin
+  spec:
+    database_url: postgres://postgres:postgres@localhost:5434/k8s?sslmode=disable
+    contexts:
+      - dev
+      - prod
+    resources:
+      - namespaces
+      - pods
+      - deployments
+      - services
+      - crds
