@@ -2,45 +2,93 @@
 
 ## Overview
 
-This is a CloudQuery **source plugin** that discovers and monitors Kubernetes resources across multiple clusters. It integrates with CloudQuery's gRPC plugin framework and persists data to PostgreSQL.
+This is a CloudQuery v6 **source plugin** that discovers and monitors Kubernetes resources across multiple clusters. It emits Apache Arrow records as `SyncInsert` messages through CloudQuery's message pipeline for destination plugins to persist.
 
 ## System Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    CloudQuery CLI                           │
-│                  (cloudquery sync)                          │
-└────────────────────┬────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│                    CloudQuery CLI v6                             │
+│                  (cloudquery sync)                               │
+└────────────────────┬─────────────────────────────────────────────┘
                      │
-                     │ gRPC (plugin protocol)
+                     │ gRPC (plugin protocol v3)
                      ▼
-┌─────────────────────────────────────────────────────────────┐
-│        Plugin Server (cmd/plugin/main.go)                   │
-│  - Implements SourceClient interface                        │
-│  - Serves via CloudQuery SDK v4 serve.Plugin()             │
-└────────────────────┬────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│   CloudQuery Source Plugin: k8s-custom (./bin/plugin)            │
+│                                                                  │
+│  Implements CloudQuery SourceClient interface:                  │
+│  - Sync(ctx, SyncOptions, chan<- SyncMessage)                  │
+│  - Tables(ctx) -> []*schema.Table                               │
+│  - Close(ctx)                                                   │
+└────────────────────┬─────────────────────────────────────────────┘
                      │
-        ┌────────────┼────────────┐
-        ▼            ▼            ▼
-    ┌────────┐  ┌────────┐  ┌─────────┐
-    │  Sync  │  │ Tables │  │ Close   │
-    │ Method │  │ Method │  │ Method  │
-    └────────┘  └────────┘  └─────────┘
-        │            │
-        │ (plugin/source_client.go - 276 lines)
-        │
-        ├─ Load Config (database_url, contexts, resources)
-        ├─ Discover K8s Contexts from ~/.kube/config
-        ├─ Iterate each context
-        │   ├─ Fetch Namespaces
-        │   ├─ Fetch Pods
-        │   ├─ Fetch Deployments
-        │   ├─ Fetch Services
-        │   └─ Fetch CustomResourceDefinitions (CRDs)
-        │   └─ Capture Cluster Metadata (server, version, nodes)
-        │
-        └─ Store Data in PostgreSQL (internal/db.go)
-           └─ Upsert with composite key: (context_name, uid)
+                     │ Emit message.SyncInsert with Arrow records
+                     │ (RecordBuilder pattern with Timestamp_ns types)
+                     ▼
+        ┌────────────────────────────┐
+        │  Kubernetes Client         │
+        │  (Multi-context discovery) │
+        │                            │
+        │  For each context:         │
+        │  - Fetch Clusters          │
+        │  - Fetch Namespaces        │
+        │  - Fetch Pods              │
+        │  - Fetch Deployments       │
+        │  - Fetch Services          │
+        │  - Fetch CRDs              │
+        └────────────────────────────┘
+                     │
+                     │ SyncInsert messages with Arrow records
+                     │ (RecordBatch via RecordBuilder)
+                     ▼
+┌──────────────────────────────────────────────────────────────────┐
+│         CloudQuery Destination: PostgreSQL v8.14.0               │
+│                                                                  │
+│  - Consumes SyncInsert messages                                 │
+│  - Deserializes Arrow records                                   │
+│  - Applies schema migration (forced mode)                       │
+│  - Persists rows to tables                                      │
+└──────────────────────────────────────────────────────────────────┘
+                     │
+                     ▼
+            ┌──────────────────┐
+            │   PostgreSQL     │
+            │   Database       │
+            │   (k8s schema)   │
+            └──────────────────┘
+```
+
+## Message Pipeline (CloudQuery v6)
+
+The plugin uses CloudQuery v6's message-based architecture:
+
+```go
+// Source plugin emits messages:
+res <- &message.SyncInsert{
+    Record: recordBuilder.NewRecord()  // Apache Arrow RecordBatch
+}
+
+// CloudQuery CLI receives messages and routes to destination
+// Destination plugin (PostgreSQL) receives and persists
+```
+
+## Data Serialization (Apache Arrow)
+
+Each resource is converted to an Apache Arrow record:
+
+```go
+table := NamespacesTable()  // Get schema.Table with Arrow types
+bldr := array.NewRecordBuilder(memory.DefaultAllocator, table.ToArrowSchema())
+defer bldr.Release()
+
+// Append field values with proper type builders
+bldr.Field(idx).(*array.StringBuilder).Append(value)
+bldr.Field(idx).(*array.TimestampBuilder).Append(arrow.Timestamp(time.UnixNano()))
+bldr.Field(idx).(*types.UUIDBuilder).Append(uuid.Parse(...))
+
+// Emit as SyncInsert message
+res <- &message.SyncInsert{Record: bldr.NewRecord()}
 ```
 
 ## File Organization
@@ -57,29 +105,49 @@ This is a CloudQuery **source plugin** that discovers and monitors Kubernetes re
   - Returns `plugin.Plugin` for CloudQuery framework
 
 ### Core Logic
-- **`plugin/source_client.go`** (276 lines) ⭐ **NEW**
+- **`plugin/source_client.go`** (433 lines) ⭐ **NOW WITH SYNCINSERT**
   - Implements `plugin.SourceClient` interface:
-    - `NewSourceClient(ctx, logger, spec)` — Constructor with config loading
-    - `Tables(ctx, options)` — Returns all table schemas
-    - `Sync(ctx, options, res)` — Main sync entry point
+    - `NewSourceClient(ctx, logger, spec)` — Constructor with YAML/JSON config loading
+    - `Tables(ctx, options)` — Returns all table schemas with Arrow types
+    - `Sync(ctx, options, res)` — Main sync entry point emitting SyncInsert messages
     - `Close(ctx)` — Cleanup
-  - Config parsing: JSON spec from CloudQuery or env vars
-  - Per-resource sync helpers: `syncNamespaces()`, `syncPods()`, etc.
-  - Sends `SyncMessage` (migrate table, insert rows) to CloudQuery
+  - **SyncInsert Message Emission:**
+    - `syncCluster()` — Emits cluster metadata records
+    - `syncNamespaces()` — Emits namespace records with UUID builder
+    - `syncPods()` — Emits pod records with timestamps
+    - `syncDeployments()` — Emits deployment records with replica counts
+    - `syncServices()` — Emits service records with types and IPs
+    - `syncCRDs()` — Emits custom resource definition records
+  - **Arrow Record Building:**
+    - Uses `array.NewRecordBuilder()` with proper schema
+    - Type-safe builders: `UUIDBuilder`, `StringBuilder`, `Int64Builder`, `BooleanBuilder`, `TimestampBuilder`
+    - Emits `&message.SyncInsert{Record: bldr.NewRecord()}` for each resource
+  - Config parsing: YAML/JSON spec from CloudQuery or env vars
+  - CloudQuery v6 format: Reads from `kind: source` config files
 
 ### Schema Definitions
-- **`plugin/resources_tables.go`** (OLD pattern, still used)
-  - Defines table schemas for CloudQuery:
-    - `k8s_clusters`
-    - `k8s_namespaces`
-    - `k8s_pods`
-    - `k8s_deployments`
-    - `k8s_services`
-    - `k8s_custom_resources`
+- **`plugin/resources_tables.go`** (87 lines)
+  - Defines CloudQuery table schemas with Apache Arrow types:
+    - `ClustersTable()` — context_name (PK), cluster metadata, timestamps
+    - `NamespacesTable()` — UUID (PK), name, status, created_at
+    - `PodsTable()` — UUID (PK), name, namespace, status, timestamp
+    - `DeploymentsTable()` — UUID (PK), name, namespace, replicas (Int64), ready (Int64), timestamp
+    - `ServicesTable()` — UUID (PK), name, namespace, type, cluster_ip, timestamp
+    - `CustomResourcesTable()` — UUID (PK), name, group, kind, plural, scope, timestamp
+  - **Arrow Type Mapping:**
+    - UUIDs: `types.ExtensionTypes.UUID` → `types.UUIDBuilder`
+    - Strings: `arrow.BinaryTypes.String` → `array.StringBuilder`
+    - Integers: `arrow.PrimitiveTypes.Int64` → `array.Int64Builder`
+    - Booleans: `arrow.FixedWidthTypes.Boolean` → `array.BooleanBuilder`
+    - Timestamps: `arrow.FixedWidthTypes.Timestamp_ns` → `array.TimestampBuilder`
 
-- **`plugin/*_resolver.go`** (OLD pattern)
-  - Legacy resolvers (not used by new architecture)
-  - Can be removed in future refactor
+- **`plugin/namespaces.go`** (35 lines)
+  - Namespace table schema with proper Arrow types
+  - Referenced by `syncNamespaces()` for record building
+
+- **`plugin/*_resolver.go`** (Legacy, deprecated)
+  - Old resolvers not used with SyncInsert architecture
+  - Can be removed in future cleanup
 
 ### Kubernetes Client
 - **`internal/client.go`** (83 lines)
@@ -87,13 +155,12 @@ This is a CloudQuery **source plugin** that discovers and monitors Kubernetes re
   - Discovers available contexts: `GetAvailableContexts()`
   - Provides Kubernetes clientset + API extensions client
 
-### Data Persistence
-- **`internal/db.go`** (100+ lines)
+### Data Persistence (Deprecated)
+- **`internal/db.go`** (163 lines) — Legacy direct database layer
+  - Now bypassed by CloudQuery destination plugin
   - PostgreSQL connection management (pgx v5)
-  - Schema creation with composite primary keys: `(context_name, uid)`
-  - Upsert methods for each resource type:
-    - `UpsertCluster()`, `UpsertNamespace()`, `UpsertPod()`, `UpsertDeployment()`, `UpsertService()`, `UpsertCRD()`
-  - ON CONFLICT DO UPDATE for idempotent updates
+  - Kept for backward compatibility
+  - No longer called by SyncInsert architecture
 
 ## Data Model
 
@@ -135,60 +202,194 @@ Example: `k8s_pods`
 - `uid`: Kubernetes object UUID
 - Supports multi-cluster deployments without conflicts
 
-## Configuration
+## Configuration (CloudQuery v6 Format)
 
-### Option 1: JSON Spec (CloudQuery)
+### Source Configuration (cloudquery_sync.yml)
 ```yaml
-sources:
-  - name: k8s-custom
-    spec:
-      database_url: postgres://user:pass@localhost:5432/k8s?sslmode=disable
-      contexts:
-        - dev
-        - prod
-      resources:
-        - namespaces
-        - pods
-        - deployments
-        - services
-        - crds
+kind: source
+spec:
+  name: k8s-custom
+  registry: local
+  path: ./bin/plugin
+  destinations:
+    - postgres
+  spec:
+    database_url: postgres://user:pass@localhost:5432/k8s?sslmode=disable
+    contexts:
+      - dev
+      - prod
+    resources:
+      - clusters
+      - namespaces
+      - pods
+      - deployments
+      - services
+      - crds
+  tables:
+    - k8s_clusters
+    - k8s_namespaces
+    - k8s_pods
+    - k8s_deployments
+    - k8s_services
+    - k8s_custom_resources
 ```
 
-### Option 2: Environment Variables (Testing)
+### Destination Configuration (cloudquery_destination.yml)
+```yaml
+kind: destination
+spec:
+  name: postgres
+  registry: cloudquery
+  path: cloudquery/postgresql
+  version: "v8.14.0"
+  migrate_mode: forced
+  spec:
+    connection_string: postgres://user:pass@localhost:5432/k8s?sslmode=disable
+```
+
+### Environment Variables (Testing)
 ```zsh
 export DATABASE_URL="postgres://user:pass@localhost:5432/k8s?sslmode=disable"
 export K8S_CONTEXTS="dev,prod"
-export K8S_RESOURCES="namespaces,pods,deployments,services,crds"
+export K8S_RESOURCES="clusters,namespaces,pods,deployments,services,crds"
 ```
 
-## Sync Workflow
+## Sync Workflow (CloudQuery v6 SyncInsert)
 
-1. **CloudQuery CLI** invokes plugin via gRPC
-2. **Plugin loads config** from spec or env vars
-3. **For each filtered context:**
-   - Create Kubernetes client for that context
-   - For each filtered resource type:
-     - Fetch resources from Kubernetes API
-     - Convert to CloudQuery row format
-     - Send `SyncMigrateTable` message (schema)
-     - Send `SyncInsert` message (rows)
-     - Store to Postgres via `db.Store.Upsert*()`
-4. **CloudQuery receives messages** and applies to destinations
-5. **Plugin closes** connection cleanly
+1. **CloudQuery CLI** invokes plugin via gRPC with `Sync(ctx, SyncOptions, chan SyncMessage)`
+
+2. **Plugin initializes:**
+   - Parses YAML/JSON config from `kind: source` spec
+   - Discovers Kubernetes contexts from `~/.kube/config`
+
+3. **For each context (filtered by config):**
+   - Create Kubernetes client via `internal.NewForContext()`
+   - Get cluster metadata (server, version, node count)
+
+4. **For each resource type (filtered by config):**
+   - Fetch from Kubernetes API
+   - For each resource:
+     ```go
+     // Build Arrow record
+     bldr := array.NewRecordBuilder(memory.DefaultAllocator, table.ToArrowSchema())
+     bldr.Field(...).(*array.StringBuilder).Append(...)
+     bldr.Field(...).(*types.UUIDBuilder).Append(...)
+     bldr.Field(...).(*array.TimestampBuilder).Append(...)
+     
+     // Emit SyncInsert message
+     res <- &message.SyncInsert{Record: bldr.NewRecord()}
+     ```
+
+5. **CloudQuery CLI receives messages:**
+   - Deserializes Arrow records
+   - Routes to destination plugin (PostgreSQL)
+
+6. **PostgreSQL destination:**
+   - Creates tables if needed (forced migration)
+   - Inserts/updates rows from Arrow records
+   - Applies ON CONFLICT DO UPDATE logic
+
+7. **Plugin closes** cleanly after all contexts and resources processed
+
+## Data Model
+
+### Cluster Metadata
+```sql
+CREATE TABLE k8s_clusters (
+  context_name TEXT PRIMARY KEY,
+  cluster_name TEXT,
+  server TEXT,
+  ca_file TEXT,
+  insecure_skip_verify BOOLEAN,
+  namespace TEXT,
+  kubernetes_version TEXT,
+  node_count INTEGER,
+  synced_at TIMESTAMP WITH TIME ZONE,
+  created_at TIMESTAMP WITH TIME ZONE,
+  updated_at TIMESTAMP WITH TIME ZONE
+);
+```
+
+### Resource Tables
+All tables follow this pattern:
+
+```sql
+CREATE TABLE k8s_<resource> (
+    id UUID PRIMARY KEY,  -- Kubernetes object UID (Arrow ExtensionType)
+    name TEXT,
+    namespace TEXT,
+    created_at TIMESTAMP WITH TIME ZONE,
+    -- resource-specific fields
+);
+```
+
+**Cluster Relationships:**
+- Each namespace/pod/deployment/service belongs to a context (cluster)
+- Query example:
+  ```sql
+  SELECT 
+    c.context_name,
+    c.kubernetes_version,
+    n.name as namespace,
+    p.name as pod
+  FROM k8s_clusters c
+  JOIN k8s_namespaces n ON c.context_name = n.context_name
+  JOIN k8s_pods p ON n.name = p.namespace AND c.context_name = p.context_name
+  ORDER BY c.context_name, n.name, p.name;
+  ```
 
 ## Dependencies
 
 ### Go Modules
-- `github.com/cloudquery/plugin-sdk/v4` (v4.94.0) — gRPC plugin framework
+- `github.com/cloudquery/plugin-sdk/v4` (v4.94.1) — gRPC plugin framework with Arrow support
+- `github.com/apache/arrow-go/v18` (v18.5.0) — Apache Arrow serialization
+- `github.com/google/uuid` — UUID parsing for Arrow records
 - `github.com/jackc/pgx/v5` — PostgreSQL driver
 - `k8s.io/client-go` (v0.35.0) — Kubernetes API client
 - `k8s.io/apiextensions-apiserver` — CRD discovery
 - `github.com/rs/zerolog` — Structured logging
+- `gopkg.in/yaml.v3` — YAML config parsing
 
 ### External Services
-- **PostgreSQL** — Data persistence (composite-key schema)
+- **PostgreSQL v8.14.0+** — Destination for Arrow data (via cloudquery-postgresql plugin)
 - **Kubernetes clusters** — Resource discovery (via kubeconfig)
 - **~/.kube/config** — Kubernetes context configuration
+- **CloudQuery CLI v6.34.0+** — Orchestration and message routing
+
+## Implementation Details: SyncInsert Message Pattern
+
+### Arrow Record Builder Flow
+```go
+// 1. Get table schema with Arrow types
+table := PodsTable()  // Contains column definitions with arrow.FixedWidthTypes.Timestamp_ns, etc.
+
+// 2. Create record builder with memory allocator
+bldr := array.NewRecordBuilder(memory.DefaultAllocator, table.ToArrowSchema())
+defer bldr.Release()
+
+// 3. Append each field with proper type builder
+idx := table.Columns.Index("id")
+bldr.Field(idx).(*types.UUIDBuilder).Append(uuid.Parse(...))
+
+idx = table.Columns.Index("name")
+bldr.Field(idx).(*array.StringBuilder).Append("pod-name")
+
+idx = table.Columns.Index("created_at")
+bldr.Field(idx).(*array.TimestampBuilder).Append(arrow.Timestamp(time.Now().UnixNano()))
+
+// 4. Build and emit record
+rec := bldr.NewRecord()
+res <- &message.SyncInsert{Record: rec}
+```
+
+### Type Builder Mapping
+| Arrow Type | Builder Class | Go Value |
+|-----------|---------------|----------|
+| String | `array.StringBuilder` | `string` |
+| Int64 | `array.Int64Builder` | `int64` |
+| Boolean | `array.BooleanBuilder` | `bool` |
+| Timestamp_ns | `array.TimestampBuilder` | `arrow.Timestamp(int64)` |
+| UUID (ExtensionType) | `types.UUIDBuilder` | `uuid.UUID` |
 
 ## Testing
 
@@ -222,28 +423,31 @@ See `TESTING.md` for:
 
 ## Performance Notes
 
-- **Namespace isolation:** Composite key `(context_name, uid)` allows any number of clusters
-- **Upsert efficiency:** ON CONFLICT DO UPDATE is atomic and efficient
+- **Arrow serialization:** Columnar format is efficient for bulk inserts
+- **UUID handling:** ExtensionType with FixedSizeBinary backing
+- **Timestamp precision:** Nanosecond precision (Timestamp_ns) for accuracy
+- **Memory efficiency:** RecordBuilder defers cleanup via defer bldr.Release()
 - **API rate limiting:** Respects Kubernetes API quotas
-- **Postgres connection pooling:** Uses pgx connection pool for concurrent operations
+- **Batch processing:** Arrow records are naturally batched
 
 ## Security Considerations
 
 1. **kubeconfig** — Must have read access to `~/.kube/config`
 2. **RBAC** — Requires read permissions on all monitored resources
-3. **Database credentials** — Pass via `database_url` or `DATABASE_URL` env var (consider secrets management)
+3. **Database credentials** — Pass via `cloudquery_destination.yml` (consider secrets management)
 4. **Network** — PostgreSQL connection should be over TLS in production
+5. **Plugin isolation** — CloudQuery plugin runs with minimal privileges
 
 ## Debugging
 
 ### Enable verbose logging:
 ```zsh
-cloudquery sync config.yml --log-level debug
+cloudquery sync cloudquery_sync.yml cloudquery_destination.yml --log-level debug
 ```
 
-### Check plugin logs:
+### Check plugin output:
 ```zsh
-./bin/plugin 2>&1 | head -100
+./bin/plugin 2>&1 | head -50
 ```
 
 ### Verify Kubernetes access:
@@ -254,5 +458,9 @@ kubectl --context=prod get all -A
 
 ### Query Postgres directly:
 ```zsh
-psql -U postgres k8s -c "SELECT * FROM k8s_namespaces LIMIT 5;"
+psql -U postgres k8s -c "SELECT context_name, kubernetes_version, node_count FROM k8s_clusters;"
+psql -U postgres k8s -c "SELECT name, namespace, status FROM k8s_pods LIMIT 5;"
 ```
+
+### Check Arrow record serialization:
+Monitor CloudQuery CLI output for `Resources: XX, Errors: 0` confirmation of successful message emission.
