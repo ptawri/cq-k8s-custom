@@ -7,6 +7,7 @@ import (
 
 	apiextensionsclientset "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/util/homedir"
 )
@@ -14,6 +15,7 @@ import (
 type Client struct {
 	Clientset              *kubernetes.Clientset
 	ApiextensionsClientset apiextensionsclientset.Interface
+	Config                 *rest.Config
 	id                     string
 	context                string
 }
@@ -58,6 +60,7 @@ func NewForContext(ctx context.Context, kubeContext string) (*Client, error) {
 	return &Client{
 		Clientset:              clientset,
 		ApiextensionsClientset: apiextensionsClientset,
+		Config:                 config,
 		id:                     fmt.Sprintf("k8s-%s", kubeContext),
 		context:                kubeContext,
 	}, nil
@@ -87,4 +90,36 @@ func GetAvailableContexts() ([]string, error) {
 		contexts = append(contexts, name)
 	}
 	return contexts, nil
+}
+
+func GetContextDetails(contextName string) (string, string, error) {
+	home := homedir.HomeDir()
+	kubeconfig := filepath.Join(home, ".kube", "config")
+
+	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
+	loadingRules.ExplicitPath = kubeconfig
+	clientConfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, &clientcmd.ConfigOverrides{})
+
+	config, err := clientConfig.RawConfig()
+	if err != nil {
+		return "", "", err
+	}
+
+	resolvedContext := contextName
+	if resolvedContext == "" {
+		resolvedContext = config.CurrentContext
+	}
+
+	ctx, ok := config.Contexts[resolvedContext]
+	if !ok {
+		return "", "", fmt.Errorf("context %q not found in kubeconfig", resolvedContext)
+	}
+
+	clusterName := ctx.Cluster
+	namespace := ctx.Namespace
+	if namespace == "" {
+		namespace = "default"
+	}
+
+	return clusterName, namespace, nil
 }

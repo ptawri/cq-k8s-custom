@@ -4,6 +4,7 @@
 This is a custom CloudQuery source plugin that queries multiple Kubernetes contexts from your kubeconfig and lists core resources plus CRDs. It currently prints results to stdout and exposes tables to CloudQuery.
 
 ## Resources Supported
+- Cluster metadata (per context)
 - Namespaces
 - Pods
 - Deployments
@@ -11,11 +12,15 @@ This is a custom CloudQuery source plugin that queries multiple Kubernetes conte
 - CustomResourceDefinitions (CRDs)
 
 ## Tables Exposed
+- `k8s_clusters`
 - `k8s_namespaces`
 - `k8s_pods`
 - `k8s_deployments`
 - `k8s_services`
 - `k8s_custom_resources`
+
+## Cluster Metadata
+Each context is stored in `k8s_clusters` with server, CA file, default namespace, Kubernetes version, and node count.
 
 ## Build
 ```zsh
@@ -76,6 +81,18 @@ This will run the plugin and automatically persist Kubernetes data to Postgres.
 ## Notes
 - The plugin discovers all Kubernetes contexts from `~/.kube/config` and iterates through them.
 - Contexts that are not running will print connection errors and continue.
+
+## SQL Examples
+List namespaces per cluster/context:
+
+```sql
+SELECT c.context_name,
+       c.cluster_name,
+       n.name AS namespace
+FROM k8s_namespaces n
+JOIN k8s_clusters c ON c.context_name = n.context_name
+ORDER BY c.context_name, n.name;
+```
 
 ## Extension Ideas
 - Workloads: StatefulSets, DaemonSets, Jobs, CronJobs

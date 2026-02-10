@@ -60,6 +60,7 @@ func (c *SourceClient) Close(ctx context.Context) error {
 
 func (c *SourceClient) Tables(ctx context.Context, options plugin.TableOptions) (schema.Tables, error) {
 	return schema.Tables{
+		ClustersTable(),
 		NamespacesTable(),
 		PodsTable(),
 		DeploymentsTable(),
@@ -91,6 +92,51 @@ func (c *SourceClient) Sync(ctx context.Context, options plugin.SyncOptions, res
 		if err != nil {
 			c.logger.Warn().Err(err).Str("context", contextName).Msg("failed to create client")
 			continue
+		}
+
+		// Store cluster information
+		config := client.Config
+		server := ""
+		caFile := ""
+		insecureSkipVerify := false
+		clusterName := contextName
+		namespace := "default"
+		kubernetesVersion := ""
+		nodeCount := int64(0)
+
+		if contextCluster, contextNamespace, err := internal.GetContextDetails(contextName); err != nil {
+			c.logger.Warn().Err(err).Str("context", contextName).Msg("failed to read context details")
+		} else {
+			if contextCluster != "" {
+				clusterName = contextCluster
+			}
+			if contextNamespace != "" {
+				namespace = contextNamespace
+			}
+		}
+
+		if config != nil && config.Host != "" {
+			server = config.Host
+			if config.CAFile != "" {
+				caFile = config.CAFile
+			}
+			insecureSkipVerify = config.Insecure
+		}
+
+		if versionInfo, err := client.Clientset.Discovery().ServerVersion(); err != nil {
+			c.logger.Warn().Err(err).Str("context", contextName).Msg("failed to read kubernetes version")
+		} else if versionInfo != nil {
+			kubernetesVersion = versionInfo.GitVersion
+		}
+
+		if nodes, err := client.Clientset.CoreV1().Nodes().List(ctx, metav1.ListOptions{}); err != nil {
+			c.logger.Warn().Err(err).Str("context", contextName).Msg("failed to list nodes")
+		} else {
+			nodeCount = int64(len(nodes.Items))
+		}
+
+		if err := c.store.UpsertCluster(ctx, contextName, clusterName, server, caFile, insecureSkipVerify, namespace, kubernetesVersion, nodeCount); err != nil {
+			c.logger.Warn().Err(err).Str("context", contextName).Msg("failed to store cluster info")
 		}
 
 		if c.shouldSyncResource("namespaces", "k8s_namespaces", options) {

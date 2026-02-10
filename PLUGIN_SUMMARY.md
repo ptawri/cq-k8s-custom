@@ -9,6 +9,7 @@ This plugin connects to all Kubernetes contexts found in your local kubeconfig a
 - Handles unavailable contexts gracefully by printing connection errors.
 
 ## Resources Collected
+- **Clusters**: context name, API server, default namespace, version, node count.
 - **Namespaces**: name and status.
 - **Pods**: name, namespace, and phase.
 - **Deployments**: name, namespace, ready/desired replicas.
@@ -16,6 +17,7 @@ This plugin connects to all Kubernetes contexts found in your local kubeconfig a
 - **CRDs (CustomResourceDefinitions)**: name, kind, and scope.
 
 ## Tables Exposed (CloudQuery)
+- `k8s_clusters`
 - `k8s_namespaces`
 - `k8s_pods`
 - `k8s_deployments`

@@ -25,6 +25,23 @@ func (s *Store) Close() {
 
 func (s *Store) EnsureSchema(ctx context.Context) error {
 	_, err := s.pool.Exec(ctx, `
+CREATE TABLE IF NOT EXISTS k8s_clusters (
+	context_name TEXT PRIMARY KEY,
+	cluster_name TEXT NOT NULL,
+	server TEXT,
+	ca_file TEXT,
+	insecure_skip_verify BOOLEAN DEFAULT FALSE,
+	namespace TEXT DEFAULT 'default',
+	kubernetes_version TEXT,
+	node_count INTEGER,
+	synced_at TIMESTAMPTZ NOT NULL,
+	created_at TIMESTAMPTZ NOT NULL,
+	updated_at TIMESTAMPTZ NOT NULL
+);
+
+ALTER TABLE k8s_clusters ADD COLUMN IF NOT EXISTS kubernetes_version TEXT;
+ALTER TABLE k8s_clusters ADD COLUMN IF NOT EXISTS node_count INTEGER;
+
 CREATE TABLE IF NOT EXISTS k8s_namespaces (
 	context_name TEXT NOT NULL,
 	uid TEXT NOT NULL,
@@ -78,6 +95,25 @@ CREATE TABLE IF NOT EXISTS k8s_crds (
 	PRIMARY KEY (context_name, uid)
 );
 `)
+	return err
+}
+
+func (s *Store) UpsertCluster(ctx context.Context, contextName, clusterName, server, caFile string, insecureSkipVerify bool, namespace, kubernetesVersion string, nodeCount int64) error {
+	now := time.Now()
+	_, err := s.pool.Exec(ctx, `
+INSERT INTO k8s_clusters (context_name, cluster_name, server, ca_file, insecure_skip_verify, namespace, kubernetes_version, node_count, synced_at, created_at, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+ON CONFLICT (context_name)
+DO UPDATE SET cluster_name = EXCLUDED.cluster_name,
+	server = EXCLUDED.server,
+	ca_file = EXCLUDED.ca_file,
+	insecure_skip_verify = EXCLUDED.insecure_skip_verify,
+	namespace = EXCLUDED.namespace,
+	kubernetes_version = EXCLUDED.kubernetes_version,
+	node_count = EXCLUDED.node_count,
+	synced_at = EXCLUDED.synced_at,
+	updated_at = EXCLUDED.updated_at;
+`, contextName, clusterName, server, caFile, insecureSkipVerify, namespace, kubernetesVersion, nodeCount, now, now, now)
 	return err
 }
 

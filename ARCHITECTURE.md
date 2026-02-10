@@ -37,6 +37,7 @@ This is a CloudQuery **source plugin** that discovers and monitors Kubernetes re
         │   ├─ Fetch Deployments
         │   ├─ Fetch Services
         │   └─ Fetch CustomResourceDefinitions (CRDs)
+        │   └─ Capture Cluster Metadata (server, version, nodes)
         │
         └─ Store Data in PostgreSQL (internal/db.go)
            └─ Upsert with composite key: (context_name, uid)
@@ -69,6 +70,7 @@ This is a CloudQuery **source plugin** that discovers and monitors Kubernetes re
 ### Schema Definitions
 - **`plugin/resources_tables.go`** (OLD pattern, still used)
   - Defines table schemas for CloudQuery:
+    - `k8s_clusters`
     - `k8s_namespaces`
     - `k8s_pods`
     - `k8s_deployments`
@@ -90,10 +92,27 @@ This is a CloudQuery **source plugin** that discovers and monitors Kubernetes re
   - PostgreSQL connection management (pgx v5)
   - Schema creation with composite primary keys: `(context_name, uid)`
   - Upsert methods for each resource type:
-    - `UpsertNamespace()`, `UpsertPod()`, `UpsertDeployment()`, `UpsertService()`, `UpsertCRD()`
+    - `UpsertCluster()`, `UpsertNamespace()`, `UpsertPod()`, `UpsertDeployment()`, `UpsertService()`, `UpsertCRD()`
   - ON CONFLICT DO UPDATE for idempotent updates
 
 ## Data Model
+
+### Cluster Metadata
+```sql
+CREATE TABLE k8s_clusters (
+  context_name TEXT PRIMARY KEY,
+  cluster_name TEXT NOT NULL,
+  server TEXT,
+  ca_file TEXT,
+  insecure_skip_verify BOOLEAN DEFAULT FALSE,
+  namespace TEXT DEFAULT 'default',
+  kubernetes_version TEXT,
+  node_count INTEGER,
+  synced_at TIMESTAMP,
+  created_at TIMESTAMP,
+  updated_at TIMESTAMP
+);
+```
 
 ### Schema Structure
 All tables follow this pattern:
