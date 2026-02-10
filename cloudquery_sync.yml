@@ -1,0 +1,15 @@
+sources:
+  - name: k8s-custom
+    path: ./bin/plugin
+    registry: local
+    spec:
+      database_url: postgres://postgres:postgres@localhost:5434/k8s?sslmode=disable
+      contexts:
+        - dev
+        - prod
+      resources:
+        - namespaces
+        - pods
+        - deployments
+        - services
+        - crds

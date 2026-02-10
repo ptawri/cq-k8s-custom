@@ -1,0 +1,33 @@
+# Binaries
+bin/
+*.o
+*.a
+*.so
+*.exe
+*.dylib
+
+# Go build
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Testing
+coverage.out
+*.test
+
+# Vendor (if using vendor)
+vendor/
+
+# Environment
+.env
+.env.local
+
+# CloudQuery
+.cq/

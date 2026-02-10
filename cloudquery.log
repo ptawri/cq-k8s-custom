@@ -1,0 +1,6 @@
+2026-02-10T09:20:10Z INF CloudQuery CLI invocation_id=cd802c59-eecd-4744-885b-c3c58274da68 module=cli version=6.34.0
+2026-02-10T09:20:10Z INF Loading spec(s) args=["cloudquery_test.yml"] invocation_id=cd802c59-eecd-4744-885b-c3c58274da68 module=cli
+2026-02-10T09:20:10Z ERR exiting with error error="failed to load spec(s) from cloudquery_test.yml. Error: failed to unmarshal file cloudquery_test.yml: failed to decode spec: json: unknown field \"destinations\"" invocation_id=cd802c59-eecd-4744-885b-c3c58274da68 module=cli
+2026-02-10T09:20:28Z INF CloudQuery CLI invocation_id=a53a61ab-17d4-468d-adc3-33431794b0a0 module=cli version=6.34.0
+2026-02-10T09:20:28Z INF Loading spec(s) args=["cloudquery_sync.yml"] invocation_id=a53a61ab-17d4-468d-adc3-33431794b0a0 module=cli
+2026-02-10T09:20:28Z ERR exiting with error error="failed to load spec(s) from cloudquery_sync.yml. Error: failed to unmarshal file cloudquery_sync.yml: failed to decode spec: json: unknown field \"sources\"" invocation_id=a53a61ab-17d4-468d-adc3-33431794b0a0 module=cli
