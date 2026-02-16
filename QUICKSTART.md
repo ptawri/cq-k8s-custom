@@ -16,7 +16,7 @@ kubectl config get-contexts
 
 # Verify PostgreSQL is running (or start it)
 brew services start postgresql
-# or: docker run -d -e POSTGRES_PASSWORD=postgres -p 5432:5432 postgres:latest
+# or: docker run -d -e POSTGRES_PASSWORD=postgres -p 5434:5432 postgres:latest
 
 # Create k8s database
 createdb k8s -U postgres
@@ -36,49 +36,65 @@ ls -lh bin/plugin
 
 ## 3. Run Your First Sync
 
+By default, the plugin syncs the **current kubectl context** only:
+
 ```zsh
-# Option A: Using the repo configs (includes both dev and prod)
+# Sync current context (recommended)
 cloudquery sync cloudquery_sync.yml cloudquery_destination.yml
 
-# Option B: Create your own configs
-cat > my_source.yml << 'EOF'
+# The plugin will:
+# 1. Detect your current kubectl context (e.g., "dev")
+# 2. Generate a unique cluster_uid based on the API server
+# 3. Sync all resources with proper cluster_uid foreign keys
+```
+
+### Optional: Sync Multiple Contexts
+
+To sync multiple contexts, edit `cloudquery_sync.yml`:
+
+```yaml
 kind: source
 spec:
   name: k8s-custom
   registry: local
   path: ./bin/plugin
+  destinations:
+    - postgres
   spec:
-    database_url: postgres://postgres:postgres@localhost:5432/k8s?sslmode=disable
+    database_url: postgres://postgres:postgres@localhost:5434/k8s?sslmode=disable
     contexts:
       - dev
-      - prod
+      - prod  # Add multiple contexts here
     resources:
+      - clusters
       - namespaces
       - pods
-EOF
-
-cat > my_destination.yml << 'EOF'
-kind: destination
-spec:
-  name: postgres
-  registry: cloudquery
-  path: postgresql
-  spec:
-    connection_string: postgres://postgres:postgres@localhost:5432/k8s?sslmode=disable
-EOF
-
-cloudquery sync my_source.yml my_destination.yml
+      - deployments
+      - services
+      - crds
 ```
 
-## 4. Verify Data
+## 4. Verify Data with Multi-Cluster Support
 
 ```sql
--- Check what was synced
-SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_name LIKE 'k8s_%';
+-- Check cluster information
+SELECT cluster_uid, context_name, cluster_name, kubernetes_version, node_count 
+FROM k8s_clusters;
+
+-- Verify foreign key relationships
+SELECT 
+    c.context_name,
+    c.cluster_name,
+    COUNT(DISTINCT n.uid) as namespaces,
+    COUNT(DISTINCT p.uid) as pods
+FROM k8s_clusters c
+LEFT JOIN k8s_namespaces n ON c.cluster_uid = n.cluster_uid
+LEFT JOIN k8s_pods p ON c.cluster_uid = p.cluster_uid
+GROUP BY c.cluster_uid, c.context_name, c.cluster_name;
 
 -- Count resources by cluster
-SELECT COUNT(*), context_name FROM k8s_namespaces GROUP BY context_name;
-SELECT COUNT(*), context_name FROM k8s_pods GROUP BY context_name;
+SELECT context_name, COUNT(*) FROM k8s_namespaces GROUP BY context_name;
+SELECT context_name, COUNT(*) FROM k8s_pods GROUP BY context_name;
 ```
 
 ## 5. Next Steps

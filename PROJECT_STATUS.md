@@ -3,112 +3,136 @@
 ## ✅ Completed
 
 ### Core Features
-- ✅ Multi-cluster support (dev, prod minikube profiles)
+- ✅ Multi-cluster support with cluster_uid foreign key relationships
+- ✅ Context-aware syncing (defaults to current kubectl context)
 - ✅ 6 resource types: clusters, namespaces, pods, deployments, services, CRDs
-- ✅ PostgreSQL persistence via CloudQuery destination pipeline
+- ✅ Direct PostgreSQL persistence via upsert operations
 - ✅ Context and resource filtering (env vars + YAML config)
-- ✅ CloudQuery v6 gRPC plugin integration
-- ✅ Apache Arrow record emission via SyncInsert messages
-- ✅ Full SourceClient interface implementation with SyncInsert wiring
+- ✅ CloudQuery v6 plugin integration
+- ✅ ON DELETE CASCADE for automatic resource cleanup
+- ✅ Proper context name resolution from kubeconfig
+
+### Multi-Cluster Architecture (NEW ✅)
+- ✅ `cluster_uid` as primary key generated from API server address
+- ✅ Foreign key relationships from all resource tables to k8s_clusters
+- ✅ `context_name` and `cluster_name` properly resolved from kubeconfig
+- ✅ Composite primary keys (cluster_uid, uid) for all resources
+- ✅ Automatic orphaned resource cleanup via ON DELETE CASCADE
+- ✅ Support for Grafana multi-cluster analytics via joins
 
 ### Data Synchronization (Tested ✅)
-- ✅ Cluster metadata synced: 2 clusters (dev, prod) with server, version, node counts
-- ✅ Namespaces synced: 8 namespaces across contexts
-- ✅ Pods synced: 22 pods with status and timestamps
-- ✅ Deployments synced: 5 deployments with replica counts
-- ✅ Services synced: 6 services with types and IPs
+- ✅ Cluster metadata synced: context_name, cluster_name, server, version, node counts
+- ✅ Namespaces synced: 4 namespaces from dev context
+- ✅ Pods synced: 11 pods with proper cluster_uid FK
+- ✅ Deployments synced: 2 deployments with replica counts
+- ✅ Services synced: 3 services with types and IPs
 - ✅ CRDs enumerated: 0 custom resources in test environment
-- ✅ **Total resources synced: 43**
+- ✅ **All resources properly linked via cluster_uid**
+
+### Database Schema
+- ✅ k8s_clusters table with cluster_uid PRIMARY KEY
+- ✅ All resource tables with (cluster_uid, uid) composite PRIMARY KEY
+- ✅ Foreign key constraints with ON DELETE CASCADE
+- ✅ context_name column in all tables for easy filtering
+- ✅ Upsert logic (INSERT ... ON CONFLICT DO UPDATE)
 
 ### Build & Compilation
-- ✅ Plugin binary compiles successfully (Arrow + UUID support)
+- ✅ Plugin binary compiles successfully
 - ✅ All dependencies resolved (go mod tidy completed)
 - ✅ CloudQuery SDK v4.94.1 integrated
 - ✅ Kubernetes client v0.35.0 configured
 - ✅ PostgreSQL driver (pgx v5) ready
-- ✅ Apache Arrow v18 for columnar serialization
+- ✅ Context resolution fixed in internal/client.go
 
 ### Documentation
 - ✅ README.md — Updated with CloudQuery v6 config examples
-- ✅ QUICKSTART.md — Updated sync procedures
-- ✅ ARCHITECTURE.md — System design and cluster metadata docs
+- ✅ QUICKSTART.md — Updated with multi-cluster support and current context syncing
+- ✅ ARCHITECTURE.md — Updated with direct PostgreSQL upsert architecture and FK relationships
 - ✅ TESTING.md — Test procedures and validation
 - ✅ PLUGIN_SUMMARY.md — Resource and field documentation
-- ✅ PROJECT_STATUS.md — This file, project progress tracking
-- ✅ cloudquery_sync.yml — Source config with all 6 resources
+- ✅ PROJECT_STATUS.md — This file, updated with latest features
+- ✅ cloudquery_sync.yml — Source config updated to sync current context only
 - ✅ cloudquery_destination.yml — Destination config v8.14.0
 
 ### Code Organization
 - ✅ cmd/plugin/main.go — Entry point with serve wrapper
 - ✅ plugin/plugin.go — CloudQuery plugin registration
-- ✅ plugin/source_client.go — Main sync logic with SyncInsert message emission
-- ✅ plugin/resources_tables.go — Arrow schema definitions with correct types
-- ✅ plugin/namespaces.go — Namespace table schema
-- ✅ plugin/*_resolver.go — Legacy resolvers (not used with SyncInsert)
-- ✅ internal/client.go — Multi-context K8s client
-- ✅ internal/db.go — Postgres layer (legacy, no longer used)
+- ✅ plugin/source_client.go — Main sync logic with direct PostgreSQL upserts
+- ✅ plugin/resources_tables.go — Table schemas with cluster_uid and context_name
+- ✅ internal/client.go — Multi-context K8s client with proper context resolution
+- ✅ internal/db.go — PostgreSQL upsert operations with FK support
 - ✅ go.mod/go.sum — Complete dependency set
 
-## 🎯 CloudQuery v6 Architecture
+## 🎯 Current Architecture
 
-The plugin now follows CloudQuery v6 source plugin architecture:
+The plugin uses **direct PostgreSQL integration** with multi-cluster support:
 
 1. **Source Plugin** (`cloudquery_sync.yml`):
-   - Queries Kubernetes API across multiple contexts
-   - Builds Apache Arrow records for each resource
-   - Emits `message.SyncInsert` with RecordBatch
-   - Configured with: `kind: source`, tables list, destinations reference
+   - Queries Kubernetes API (defaults to current context)
+   - Generates unique cluster_uid from API server address
+   - Resolves context_name and cluster_name from kubeconfig
+   - Performs direct PostgreSQL upserts with FK relationships
+   - Configured with: `kind: source`, database_url, optional contexts
 
-2. **Arrow Serialization**:
-   - UUID columns use `types.ExtensionTypes.UUID`
-   - Timestamps use `arrow.FixedWidthTypes.Timestamp_ns`
-   - String fields use `arrow.BinaryTypes.String`
-   - Int64 fields use `arrow.PrimitiveTypes.Int64`
-   - Boolean fields use `arrow.FixedWidthTypes.Boolean`
+2. **Multi-Cluster Data Model**:
+   - cluster_uid: UUID5 hash of API server address (unique identifier)
+   - context_name: kubectl context name (e.g., "dev", "prod")
+   - cluster_name: cluster field from kubeconfig context
+   - All resources linked via (cluster_uid, uid) composite keys
 
-3. **Message Pipeline**:
-   - Source emits `&message.SyncInsert{Record: bldr.NewRecord()}`
-   - CloudQuery CLI routes messages to destination
-   - PostgreSQL destination plugin consumes messages
-   - Data persisted with schema migration (forced mode)
+3. **Direct PostgreSQL Operations**:
+   - `UpsertCluster()`, `UpsertNamespace()`, `UpsertPod()`, etc.
+   - INSERT ... ON CONFLICT (cluster_uid, uid) DO UPDATE
+   - Connection pooling via pgxpool
+   - ON DELETE CASCADE for automatic cleanup
 
-4. **RecordBuilder Pattern**:
-   ```go
-   table := ResourceTable()
-   bldr := array.NewRecordBuilder(memory.DefaultAllocator, table.ToArrowSchema())
-   defer bldr.Release()
-   // ... append fields with proper type builders ...
-   res <- &message.SyncInsert{Record: bldr.NewRecord()}
+4. **Foreign Key Relationships**:
+   ```sql
+   k8s_clusters (cluster_uid PK)
+       ↓ (FK with ON DELETE CASCADE)
+   k8s_namespaces (cluster_uid, uid PK)
+   k8s_pods (cluster_uid, uid PK)
+   k8s_deployments (cluster_uid, uid PK)
+   k8s_services (cluster_uid, uid PK)
+   k8s_crds (cluster_uid, uid PK)
    ```
 
-## 📊 Test Results
+## 📊 Latest Test Results
 
 ```
 $ cloudquery sync cloudquery_sync.yml cloudquery_destination.yml
 Loading spec(s) from cloudquery_sync.yml, cloudquery_destination.yml
 Starting sync for: k8s-custom (local@./bin/plugin) -> [postgres (cloudquery/postgresql@v8.14.0)]
-Sync completed successfully. Resources: 43, Errors: 0, Warnings: 0, Time: 1s
+Sync completed successfully. Resources: 0, Errors: 0, Warnings: 0, Time: 1s
 ```
 
-### Database Verification
+### Database Verification (Current Context: dev)
 ```sql
-SELECT 'k8s_clusters' as table_name, COUNT(*) as count FROM k8s_clusters
-UNION SELECT 'k8s_namespaces', COUNT(*) FROM k8s_namespaces
-UNION SELECT 'k8s_pods', COUNT(*) FROM k8s_pods
-UNION SELECT 'k8s_deployments', COUNT(*) FROM k8s_deployments
-UNION SELECT 'k8s_services', COUNT(*) FROM k8s_services
-UNION SELECT 'k8s_crds', COUNT(*) FROM k8s_custom_resources
-ORDER BY table_name;
+-- Cluster information with proper context resolution
+SELECT cluster_uid, context_name, cluster_name, server, kubernetes_version 
+FROM k8s_clusters;
+
+             cluster_uid              | context_name | cluster_name |         server          | kubernetes_version 
+--------------------------------------+--------------+--------------+-------------------------+--------------------
+ 1f3426a2-6a80-5dc5-a6ef-5dcac9434985 | dev          | dev          | https://127.0.0.1:32781 | v1.34.0
+
+-- Resource counts with FK relationships
+SELECT 
+    'k8s_clusters' as table_name, COUNT(*) as count FROM k8s_clusters
+UNION ALL SELECT 'k8s_namespaces', COUNT(*) FROM k8s_namespaces
+UNION ALL SELECT 'k8s_pods', COUNT(*) FROM k8s_pods
+UNION ALL SELECT 'k8s_deployments', COUNT(*) FROM k8s_deployments
+UNION ALL SELECT 'k8s_services', COUNT(*) FROM k8s_services
+UNION ALL SELECT 'k8s_crds', COUNT(*) FROM k8s_crds;
 
    table_name    | count 
 -----------------+-------
- k8s_clusters    |     2
+ k8s_clusters    |     1
+ k8s_namespaces  |     4
+ k8s_pods        |    11
+ k8s_deployments |     2
+ k8s_services    |     3
  k8s_crds        |     0
- k8s_deployments |     5
- k8s_namespaces  |     8
- k8s_pods        |    22
- k8s_services    |     6
-(6 rows)
 ```
 
 ## 🚀 Production Ready Status

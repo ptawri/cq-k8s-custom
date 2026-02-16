@@ -2,7 +2,7 @@
 
 ## Overview
 
-This is a CloudQuery v6 **source plugin** that discovers and monitors Kubernetes resources across multiple clusters. It emits Apache Arrow records as `SyncInsert` messages through CloudQuery's message pipeline for destination plugins to persist.
+This is a CloudQuery v6 **source plugin** that discovers and monitors Kubernetes resources across multiple clusters. It uses **direct PostgreSQL upserts** for data persistence with multi-cluster support via `cluster_uid` foreign key relationships. The plugin defaults to syncing the current kubectl context and supports context-aware cluster identification.
 
 ## System Architecture
 
@@ -21,16 +21,24 @@ This is a CloudQuery v6 **source plugin** that discovers and monitors Kubernetes
 │  - Sync(ctx, SyncOptions, chan<- SyncMessage)                  │
 │  - Tables(ctx) -> []*schema.Table                               │
 │  - Close(ctx)                                                   │
+│                                                                  │
+│  NEW: Direct PostgreSQL Integration                             │
+│  - UpsertCluster, UpsertNamespace, UpsertPod, etc.            │
+│  - cluster_uid-based foreign key relationships                 │
+│  - ON DELETE CASCADE for automatic cleanup                     │
 └────────────────────┬─────────────────────────────────────────────┘
                      │
-                     │ Emit message.SyncInsert with Arrow records
-                     │ (RecordBuilder pattern with Timestamp_ns types)
+                     │ Direct PostgreSQL connection
+                     │ (pgxpool for connection pooling)
                      ▼
         ┌────────────────────────────┐
         │  Kubernetes Client         │
-        │  (Multi-context discovery) │
+        │  (Context-aware discovery) │
         │                            │
-        │  For each context:         │
+        │  Current context or        │
+        │  specified contexts:       │
+        │  - Generate cluster_uid    │
+        │  - Resolve context_name    │
         │  - Fetch Clusters          │
         │  - Fetch Namespaces        │
         │  - Fetch Pods              │
@@ -39,57 +47,75 @@ This is a CloudQuery v6 **source plugin** that discovers and monitors Kubernetes
         │  - Fetch CRDs              │
         └────────────────────────────┘
                      │
-                     │ SyncInsert messages with Arrow records
-                     │ (RecordBatch via RecordBuilder)
-                     ▼
-┌──────────────────────────────────────────────────────────────────┐
-│         CloudQuery Destination: PostgreSQL v8.14.0               │
-│                                                                  │
-│  - Consumes SyncInsert messages                                 │
-│  - Deserializes Arrow records                                   │
-│  - Applies schema migration (forced mode)                       │
-│  - Persists rows to tables                                      │
-└──────────────────────────────────────────────────────────────────┘
-                     │
+                     │ Direct upsert operations
+                     │ (INSERT ... ON CONFLICT DO UPDATE)
                      ▼
             ┌──────────────────┐
             │   PostgreSQL     │
             │   Database       │
             │   (k8s schema)   │
+            │                  │
+            │  Tables:         │
+            │  - k8s_clusters  │
+            │  - k8s_namespaces│
+            │  - k8s_pods      │
+            │  - k8s_deployments│
+            │  - k8s_services  │
+            │  - k8s_crds      │
             └──────────────────┘
 ```
 
-## Message Pipeline (CloudQuery v6)
+## Data Pipeline (Direct PostgreSQL)
 
-The plugin uses CloudQuery v6's message-based architecture:
-
-```go
-// Source plugin emits messages:
-res <- &message.SyncInsert{
-    Record: recordBuilder.NewRecord()  // Apache Arrow RecordBatch
-}
-
-// CloudQuery CLI receives messages and routes to destination
-// Destination plugin (PostgreSQL) receives and persists
-```
-
-## Data Serialization (Apache Arrow)
-
-Each resource is converted to an Apache Arrow record:
+The plugin uses direct PostgreSQL upserts for efficient data synchronization:
 
 ```go
-table := NamespacesTable()  // Get schema.Table with Arrow types
-bldr := array.NewRecordBuilder(memory.DefaultAllocator, table.ToArrowSchema())
-defer bldr.Release()
+// Direct PostgreSQL upsert operations:
+err := c.store.UpsertCluster(ctx, clusterUID, contextName, clusterName, ...)
+err := c.store.UpsertNamespace(ctx, clusterUID, contextName, uid, name, ...)
+err := c.store.UpsertPod(ctx, clusterUID, contextName, uid, namespace, name, ...)
 
-// Append field values with proper type builders
-bldr.Field(idx).(*array.StringBuilder).Append(value)
-bldr.Field(idx).(*array.TimestampBuilder).Append(arrow.Timestamp(time.UnixNano()))
-bldr.Field(idx).(*types.UUIDBuilder).Append(uuid.Parse(...))
-
-// Emit as SyncInsert message
-res <- &message.SyncInsert{Record: bldr.NewRecord()}
+// Database operations use pgxpool:
+_, err := s.pool.Exec(ctx, `
+INSERT INTO k8s_namespaces (cluster_uid, context_name, uid, name, status, created_at)
+VALUES ($1, $2, $3, $4, $5, $6)
+ON CONFLICT (cluster_uid, uid)
+DO UPDATE SET context_name = EXCLUDED.context_name,
+    name = EXCLUDED.name,
+    status = EXCLUDED.status,
+    created_at = EXCLUDED.created_at;
+`, clusterUID, contextName, uid, name, status, createdAt)
 ```
+
+## Multi-Cluster Support with Foreign Keys
+
+All resource tables use `cluster_uid` as part of their composite primary key and foreign key:
+
+```sql
+-- Primary cluster table
+CREATE TABLE k8s_clusters (
+    cluster_uid TEXT PRIMARY KEY,
+    context_name TEXT,
+    cluster_name TEXT NOT NULL,
+    ...
+);
+
+-- Resource tables with FK relationship
+CREATE TABLE k8s_namespaces (
+    cluster_uid TEXT NOT NULL,
+    context_name TEXT,
+    uid TEXT NOT NULL,
+    name TEXT NOT NULL,
+    PRIMARY KEY (cluster_uid, uid),
+    FOREIGN KEY (cluster_uid) REFERENCES k8s_clusters(cluster_uid) ON DELETE CASCADE
+);
+```
+
+**Benefits:**
+- **Data isolation**: Resources are properly scoped to their clusters
+- **Automatic cleanup**: `ON DELETE CASCADE` removes orphaned resources
+- **Relational integrity**: Guaranteed referential integrity via foreign keys
+- **Multi-cluster analytics**: Easy joins in Grafana using cluster_uid
 
 ## File Organization
 
