@@ -6,21 +6,26 @@ import (
 	"errors"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/Genos0820/cq-k8s-custom/internal"
-	"github.com/apache/arrow-go/v18/arrow"
-	"github.com/apache/arrow-go/v18/arrow/array"
-	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/cloudquery/plugin-sdk/v4/message"
 	"github.com/cloudquery/plugin-sdk/v4/plugin"
 	"github.com/cloudquery/plugin-sdk/v4/schema"
-	"github.com/cloudquery/plugin-sdk/v4/types"
 	"github.com/google/uuid"
 	"github.com/rs/zerolog"
 	"gopkg.in/yaml.v3"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
+
+// generateClusterUID creates a unique identifier for a cluster based on its API server address.
+func generateClusterUID(client *internal.Client) string {
+	if client != nil && client.Config != nil && client.Config.Host != "" {
+		// Use a UUID5 hash of the API server address for uniqueness
+		return uuid.NewSHA1(uuid.NameSpaceURL, []byte(client.Config.Host)).String()
+	}
+	// Fallback: random UUID
+	return uuid.New().String()
+}
 
 type Config struct {
 	DatabaseURL string   `json:"database_url"`
@@ -77,71 +82,95 @@ func (c *SourceClient) Tables(ctx context.Context, options plugin.TableOptions) 
 }
 
 func (c *SourceClient) Sync(ctx context.Context, options plugin.SyncOptions, res chan<- message.SyncMessage) error {
-	tables, err := c.Tables(ctx, plugin.TableOptions{})
-	if err != nil {
-		return err
-	}
+	// Migration handled elsewhere
+	if res != nil {
+	} // Silence unused parameter warning
 
-	for _, table := range tables {
-		res <- &message.SyncMigrateTable{Table: table}
-	}
-
-	contexts, err := internal.GetAvailableContexts()
-	if err != nil {
-		return err
-	}
-	for _, contextName := range contexts {
-		if !isSelected(c.contextFilter, contextName) {
-			continue
-		}
-
-		client, err := internal.NewForContext(ctx, contextName)
+	if len(c.contextFilter) == 0 {
+		// No contexts specified: use only the current context
+		client, err := internal.New(ctx)
 		if err != nil {
-			c.logger.Warn().Err(err).Str("context", contextName).Msg("failed to create client")
-			continue
+			return err
 		}
+		contextName := client.ID()
+		clusterUID := generateClusterUID(client)
 
-		// Sync cluster information
 		if c.shouldSyncResource("clusters", "k8s_clusters", options) {
-			if err := c.syncCluster(ctx, client, contextName, res); err != nil {
+			if err := c.syncCluster(ctx, client, contextName, clusterUID); err != nil {
 				c.logger.Warn().Err(err).Str("context", contextName).Msg("failed to sync cluster")
 			}
 		}
-
 		if c.shouldSyncResource("namespaces", "k8s_namespaces", options) {
-			if err := c.syncNamespaces(ctx, client, contextName, res); err != nil {
+			if err := c.syncNamespaces(ctx, client, contextName, clusterUID); err != nil {
 				c.logger.Warn().Err(err).Str("context", contextName).Msg("failed to sync namespaces")
 			}
 		}
-
 		if c.shouldSyncResource("pods", "k8s_pods", options) {
-			if err := c.syncPods(ctx, client, contextName, res); err != nil {
+			if err := c.syncPods(ctx, client, contextName, clusterUID); err != nil {
 				c.logger.Warn().Err(err).Str("context", contextName).Msg("failed to sync pods")
 			}
 		}
-
 		if c.shouldSyncResource("deployments", "k8s_deployments", options) {
-			if err := c.syncDeployments(ctx, client, contextName, res); err != nil {
+			if err := c.syncDeployments(ctx, client, contextName, clusterUID); err != nil {
 				c.logger.Warn().Err(err).Str("context", contextName).Msg("failed to sync deployments")
 			}
 		}
-
 		if c.shouldSyncResource("services", "k8s_services", options) {
-			if err := c.syncServices(ctx, client, contextName, res); err != nil {
+			if err := c.syncServices(ctx, client, contextName, clusterUID); err != nil {
 				c.logger.Warn().Err(err).Str("context", contextName).Msg("failed to sync services")
 			}
 		}
-
 		if c.shouldSyncResource("crds", "k8s_custom_resources", options) {
-			if err := c.syncCRDs(ctx, client, contextName, res); err != nil {
+			if err := c.syncCRDs(ctx, client, contextName, clusterUID); err != nil {
 				c.logger.Warn().Err(err).Str("context", contextName).Msg("failed to sync CRDs")
 			}
 		}
-
 		_ = client.Close(ctx)
-	}
+		return nil
+	} else {
+		// Contexts specified: use each one
+		for contextName := range c.contextFilter {
+			client, err := internal.NewForContext(ctx, contextName)
+			if err != nil {
+				c.logger.Warn().Err(err).Str("context", contextName).Msg("failed to create client")
+				continue
+			}
+			clusterUID := generateClusterUID(client)
 
-	return nil
+			if c.shouldSyncResource("clusters", "k8s_clusters", options) {
+				if err := c.syncCluster(ctx, client, contextName, clusterUID); err != nil {
+					c.logger.Warn().Err(err).Str("context", contextName).Msg("failed to sync cluster")
+				}
+			}
+			if c.shouldSyncResource("namespaces", "k8s_namespaces", options) {
+				if err := c.syncNamespaces(ctx, client, contextName, clusterUID); err != nil {
+					c.logger.Warn().Err(err).Str("context", contextName).Msg("failed to sync namespaces")
+				}
+			}
+			if c.shouldSyncResource("pods", "k8s_pods", options) {
+				if err := c.syncPods(ctx, client, contextName, clusterUID); err != nil {
+					c.logger.Warn().Err(err).Str("context", contextName).Msg("failed to sync pods")
+				}
+			}
+			if c.shouldSyncResource("deployments", "k8s_deployments", options) {
+				if err := c.syncDeployments(ctx, client, contextName, clusterUID); err != nil {
+					c.logger.Warn().Err(err).Str("context", contextName).Msg("failed to sync deployments")
+				}
+			}
+			if c.shouldSyncResource("services", "k8s_services", options) {
+				if err := c.syncServices(ctx, client, contextName, clusterUID); err != nil {
+					c.logger.Warn().Err(err).Str("context", contextName).Msg("failed to sync services")
+				}
+			}
+			if c.shouldSyncResource("crds", "k8s_custom_resources", options) {
+				if err := c.syncCRDs(ctx, client, contextName, clusterUID); err != nil {
+					c.logger.Warn().Err(err).Str("context", contextName).Msg("failed to sync CRDs")
+				}
+			}
+			_ = client.Close(ctx)
+		}
+		return nil
+	}
 }
 
 func (c *SourceClient) shouldSyncResource(resourceName, tableName string, options plugin.SyncOptions) bool {
@@ -154,7 +183,7 @@ func (c *SourceClient) shouldSyncResource(resourceName, tableName string, option
 	return plugin.MatchesTable(tableName, options.Tables, options.SkipTables)
 }
 
-func (c *SourceClient) syncCluster(ctx context.Context, client *internal.Client, contextName string, res chan<- message.SyncMessage) error {
+func (c *SourceClient) syncCluster(ctx context.Context, client *internal.Client, contextName, clusterUID string) error {
 	config := client.Config
 	server := ""
 	caFile := ""
@@ -195,141 +224,112 @@ func (c *SourceClient) syncCluster(ctx context.Context, client *internal.Client,
 		nodeCount = int64(len(nodes.Items))
 	}
 
-	table := ClustersTable()
-	bldr := array.NewRecordBuilder(memory.DefaultAllocator, table.ToArrowSchema())
-	defer bldr.Release()
-
-	now := time.Now()
-	bldr.Field(table.Columns.Index("context_name")).(*array.StringBuilder).Append(contextName)
-	bldr.Field(table.Columns.Index("cluster_name")).(*array.StringBuilder).Append(clusterName)
-	bldr.Field(table.Columns.Index("server")).(*array.StringBuilder).Append(server)
-	bldr.Field(table.Columns.Index("ca_file")).(*array.StringBuilder).Append(caFile)
-	bldr.Field(table.Columns.Index("insecure_skip_verify")).(*array.BooleanBuilder).Append(insecureSkipVerify)
-	bldr.Field(table.Columns.Index("namespace")).(*array.StringBuilder).Append(namespace)
-	bldr.Field(table.Columns.Index("kubernetes_version")).(*array.StringBuilder).Append(kubernetesVersion)
-	bldr.Field(table.Columns.Index("node_count")).(*array.Int64Builder).Append(nodeCount)
-	bldr.Field(table.Columns.Index("synced_at")).(*array.TimestampBuilder).Append(arrow.Timestamp(now.UnixNano()))
-	bldr.Field(table.Columns.Index("created_at")).(*array.TimestampBuilder).Append(arrow.Timestamp(now.UnixNano()))
-	bldr.Field(table.Columns.Index("updated_at")).(*array.TimestampBuilder).Append(arrow.Timestamp(now.UnixNano()))
-
-	res <- &message.SyncInsert{Record: bldr.NewRecord()}
+	err := c.store.UpsertCluster(ctx, clusterUID, contextName, clusterName, server, caFile, insecureSkipVerify, namespace, kubernetesVersion, nodeCount)
+	if err != nil {
+		return err
+	}
 	return nil
 }
 
-func (c *SourceClient) syncNamespaces(ctx context.Context, client *internal.Client, contextName string, res chan<- message.SyncMessage) error {
+func (c *SourceClient) syncNamespaces(ctx context.Context, client *internal.Client, contextName, clusterUID string) error {
 	namespaces, err := client.Clientset.CoreV1().Namespaces().List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return err
 	}
 
-	table := NamespacesTable()
 	for _, ns := range namespaces.Items {
-		bldr := array.NewRecordBuilder(memory.DefaultAllocator, table.ToArrowSchema())
-		defer bldr.Release()
-
-		uid, _ := uuid.Parse(string(ns.UID))
-		bldr.Field(table.Columns.Index("id")).(*types.UUIDBuilder).Append(uid)
-		bldr.Field(table.Columns.Index("name")).(*array.StringBuilder).Append(ns.Name)
-		bldr.Field(table.Columns.Index("status")).(*array.StringBuilder).Append(string(ns.Status.Phase))
-		bldr.Field(table.Columns.Index("created_at")).(*array.TimestampBuilder).Append(arrow.Timestamp(ns.CreationTimestamp.Time.UnixMicro()))
-
-		res <- &message.SyncInsert{Record: bldr.NewRecord()}
+		uid := string(ns.UID)
+		name := ns.Name
+		status := string(ns.Status.Phase)
+		createdAt := ns.CreationTimestamp.Time
+		err := c.store.UpsertNamespace(ctx, clusterUID, contextName, uid, name, status, createdAt)
+		if err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
-func (c *SourceClient) syncPods(ctx context.Context, client *internal.Client, contextName string, res chan<- message.SyncMessage) error {
+func (c *SourceClient) syncPods(ctx context.Context, client *internal.Client, contextName, clusterUID string) error {
 	pods, err := client.Clientset.CoreV1().Pods("").List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return err
 	}
 
-	table := PodsTable()
 	for _, pod := range pods.Items {
-		bldr := array.NewRecordBuilder(memory.DefaultAllocator, table.ToArrowSchema())
-		defer bldr.Release()
-
-		uid, _ := uuid.Parse(string(pod.UID))
-		bldr.Field(table.Columns.Index("id")).(*types.UUIDBuilder).Append(uid)
-		bldr.Field(table.Columns.Index("name")).(*array.StringBuilder).Append(pod.Name)
-		bldr.Field(table.Columns.Index("namespace")).(*array.StringBuilder).Append(pod.Namespace)
-		bldr.Field(table.Columns.Index("status")).(*array.StringBuilder).Append(string(pod.Status.Phase))
-		bldr.Field(table.Columns.Index("created_at")).(*array.TimestampBuilder).Append(arrow.Timestamp(pod.CreationTimestamp.Time.UnixMicro()))
-
-		res <- &message.SyncInsert{Record: bldr.NewRecord()}
+		uid := string(pod.UID)
+		namespace := pod.Namespace
+		name := pod.Name
+		status := string(pod.Status.Phase)
+		createdAt := pod.CreationTimestamp.Time
+		err := c.store.UpsertPod(ctx, clusterUID, contextName, uid, namespace, name, status, createdAt)
+		if err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
-func (c *SourceClient) syncDeployments(ctx context.Context, client *internal.Client, contextName string, res chan<- message.SyncMessage) error {
+func (c *SourceClient) syncDeployments(ctx context.Context, client *internal.Client, contextName, clusterUID string) error {
 	deployments, err := client.Clientset.AppsV1().Deployments("").List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return err
 	}
 
-	table := DeploymentsTable()
 	for _, deployment := range deployments.Items {
-		bldr := array.NewRecordBuilder(memory.DefaultAllocator, table.ToArrowSchema())
-		defer bldr.Release()
-
-		uid, _ := uuid.Parse(string(deployment.UID))
-		bldr.Field(table.Columns.Index("id")).(*types.UUIDBuilder).Append(uid)
-		bldr.Field(table.Columns.Index("name")).(*array.StringBuilder).Append(deployment.Name)
-		bldr.Field(table.Columns.Index("namespace")).(*array.StringBuilder).Append(deployment.Namespace)
-		bldr.Field(table.Columns.Index("replicas")).(*array.Int64Builder).Append(int64(deployment.Status.Replicas))
-		bldr.Field(table.Columns.Index("ready")).(*array.Int64Builder).Append(int64(deployment.Status.ReadyReplicas))
-		bldr.Field(table.Columns.Index("created_at")).(*array.TimestampBuilder).Append(arrow.Timestamp(deployment.CreationTimestamp.Time.UnixMicro()))
-
-		res <- &message.SyncInsert{Record: bldr.NewRecord()}
+		uid := string(deployment.UID)
+		namespace := deployment.Namespace
+		name := deployment.Name
+		replicas := int32(deployment.Status.Replicas)
+		ready := int32(deployment.Status.ReadyReplicas)
+		createdAt := deployment.CreationTimestamp.Time
+		err := c.store.UpsertDeployment(ctx, clusterUID, contextName, uid, namespace, name, replicas, ready, createdAt)
+		if err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
-func (c *SourceClient) syncServices(ctx context.Context, client *internal.Client, contextName string, res chan<- message.SyncMessage) error {
+func (c *SourceClient) syncServices(ctx context.Context, client *internal.Client, contextName, clusterUID string) error {
 	services, err := client.Clientset.CoreV1().Services("").List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return err
 	}
 
-	table := ServicesTable()
 	for _, service := range services.Items {
-		bldr := array.NewRecordBuilder(memory.DefaultAllocator, table.ToArrowSchema())
-		defer bldr.Release()
-
-		uid, _ := uuid.Parse(string(service.UID))
-		bldr.Field(table.Columns.Index("id")).(*types.UUIDBuilder).Append(uid)
-		bldr.Field(table.Columns.Index("name")).(*array.StringBuilder).Append(service.Name)
-		bldr.Field(table.Columns.Index("namespace")).(*array.StringBuilder).Append(service.Namespace)
-		bldr.Field(table.Columns.Index("type")).(*array.StringBuilder).Append(string(service.Spec.Type))
-		bldr.Field(table.Columns.Index("cluster_ip")).(*array.StringBuilder).Append(service.Spec.ClusterIP)
-		bldr.Field(table.Columns.Index("created_at")).(*array.TimestampBuilder).Append(arrow.Timestamp(service.CreationTimestamp.Time.UnixMicro()))
-
-		res <- &message.SyncInsert{Record: bldr.NewRecord()}
+		uid := string(service.UID)
+		namespace := service.Namespace
+		name := service.Name
+		serviceType := string(service.Spec.Type)
+		clusterIP := service.Spec.ClusterIP
+		createdAt := service.CreationTimestamp.Time
+		err := c.store.UpsertService(ctx, clusterUID, contextName, uid, namespace, name, serviceType, clusterIP, createdAt)
+		if err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
-func (c *SourceClient) syncCRDs(ctx context.Context, client *internal.Client, contextName string, res chan<- message.SyncMessage) error {
+func (c *SourceClient) syncCRDs(ctx context.Context, client *internal.Client, contextName, clusterUID string) error {
 	crds, err := client.ApiextensionsClientset.ApiextensionsV1().CustomResourceDefinitions().List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return err
 	}
 
-	table := CustomResourcesTable()
 	for _, crd := range crds.Items {
-		bldr := array.NewRecordBuilder(memory.DefaultAllocator, table.ToArrowSchema())
-		defer bldr.Release()
-
-		uid, _ := uuid.Parse(string(crd.UID))
-		bldr.Field(table.Columns.Index("id")).(*types.UUIDBuilder).Append(uid)
-		bldr.Field(table.Columns.Index("name")).(*array.StringBuilder).Append(crd.Name)
-		bldr.Field(table.Columns.Index("group")).(*array.StringBuilder).Append(crd.Spec.Group)
-		bldr.Field(table.Columns.Index("kind")).(*array.StringBuilder).Append(crd.Spec.Names.Kind)
-		bldr.Field(table.Columns.Index("plural")).(*array.StringBuilder).Append(crd.Spec.Names.Plural)
-		bldr.Field(table.Columns.Index("scope")).(*array.StringBuilder).Append(string(crd.Spec.Scope))
-		bldr.Field(table.Columns.Index("created_at")).(*array.TimestampBuilder).Append(arrow.Timestamp(crd.CreationTimestamp.Time.UnixMicro()))
-
-		res <- &message.SyncInsert{Record: bldr.NewRecord()}
+		uid := string(crd.UID)
+		name := crd.Name
+		groupName := crd.Spec.Group
+		kind := crd.Spec.Names.Kind
+		plural := crd.Spec.Names.Plural
+		scope := string(crd.Spec.Scope)
+		createdAt := crd.CreationTimestamp.Time
+		err := c.store.UpsertCRD(ctx, clusterUID, contextName, uid, name, groupName, kind, plural, scope, createdAt)
+		if err != nil {
+			return err
+		}
 	}
 	return nil
 }

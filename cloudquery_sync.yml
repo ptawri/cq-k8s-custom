@@ -7,9 +7,6 @@ spec:
     - postgres
   spec:
     database_url: postgres://postgres:postgres@localhost:5434/k8s?sslmode=disable
-    contexts:
-      - dev
-      - prod
     resources:
       - clusters
       - namespaces

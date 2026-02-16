@@ -57,12 +57,21 @@ func NewForContext(ctx context.Context, kubeContext string) (*Client, error) {
 		return nil, err
 	}
 
+	// Resolve the actual context name if empty
+	actualContext := kubeContext
+	if actualContext == "" {
+		rawConfig, err := clientConfig.RawConfig()
+		if err == nil {
+			actualContext = rawConfig.CurrentContext
+		}
+	}
+
 	return &Client{
 		Clientset:              clientset,
 		ApiextensionsClientset: apiextensionsClientset,
 		Config:                 config,
-		id:                     fmt.Sprintf("k8s-%s", kubeContext),
-		context:                kubeContext,
+		id:                     actualContext,
+		context:                actualContext,
 	}, nil
 }
 
